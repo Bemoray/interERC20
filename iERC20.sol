@@ -6,8 +6,10 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 contract interERC20 {
 
     ERC20 public DAOToken;
-    string public name = "interToken";
-    string public symbol = "iTKN";
+
+
+    string public name = "interERC20";
+    string public symbol = "iERC20";
     uint8 public decimals = 18;
     uint256 public totalSupply;
 
@@ -98,8 +100,34 @@ contract interERC20 {
         emit CrossIntoRequested(uniqueHash, sender, receiver, fromChainId, value, pledgedDAOTokenAmount, msg.sender, block.chainid, block.number);
     }
 
+
+
+
+
+function checkVoteStatus(string memory uniqueHash) public view returns (uint256 supportTokens, uint256 opposeTokens, uint256 lastVoteBlock, uint256 currentStatus) {
+    uint256 totalSupport = 0;
+    uint256 totalOppose = 0;
+    uint256 lastBlock = 0;
+
+    for (uint i = 0; i < voteRecords[uniqueHash].length; i++) {
+        if (voteRecords[uniqueHash][i].support) {
+            totalSupport += voteRecords[uniqueHash][i].pledgedAmount;
+        } else {
+            totalOppose += voteRecords[uniqueHash][i].pledgedAmount;
+        }
+        if (voteRecords[uniqueHash][i].voteBlock > lastBlock) {
+            lastBlock = voteRecords[uniqueHash][i].voteBlock;
+        }
+    }
+
+    return (totalSupport, totalOppose, lastBlock, crossIntoTransfers[uniqueHash].status);
+}
+
+
     function DAOVote(string memory uniqueHash, bool support, uint256 pledgedDAOTokenAmount) external {
-        require(crossIntoTransfers[uniqueHash].status == 0, "Can only vote on active CrossInto requests");
+        (uint256 supportTokens, uint256 opposeTokens, uint256 lastVoteBlock, uint256 currentStatus) = checkVoteStatus(uniqueHash);
+
+        require(currentStatus == 0, "Can only vote on active CrossInto requests");
 
         VoteRecord memory newVote = VoteRecord({
             uniqueHash: uniqueHash,
@@ -112,75 +140,58 @@ contract interERC20 {
         voteRecords[uniqueHash].push(newVote);
         emit Voted(uniqueHash, support, msg.sender, pledgedDAOTokenAmount);
 
-        // Check the vote status and act accordingly
-        (uint256 supportTokens, uint256 opposeTokens, uint256 lastVoteBlock, uint256 currentStatus) = checkVoteStatus(uniqueHash);
-        if (block.number - lastVoteBlock >= 100) {
-            if (supportTokens > opposeTokens) {
+        uint256 blocksSinceLastVote = block.number - lastVoteBlock;
+        uint256 supportRate = (supportTokens * 100) / (supportTokens + opposeTokens);
+
+        if (blocksSinceLastVote >= 100) {
+            if (supportRate > 50 && supportTokens > opposeTokens) {
                 crossIntoTransfers[uniqueHash].status = 1;
                 emit TransferSuccess(uniqueHash);
-                distributeOpposeTokens(uniqueHash, supportTokens, opposeTokens);
-                //balanceOf[address(crossIntoTransfers[uniqueHash].receiver)] += crossIntoTransfers[uniqueHash].value;
-                //do sth for your ERC20 
-                emit Transfer(address(0), address(crossIntoTransfers[uniqueHash].receiver), crossIntoTransfers[uniqueHash].value);
+                distributeOpposeTokens(uniqueHash);
+                _mint(crossIntoTransfers[uniqueHash].receiver, crossIntoTransfers[uniqueHash].value);
             } else if (opposeTokens > supportTokens) {
                 crossIntoTransfers[uniqueHash].status = 2;
                 emit TransferFailed(uniqueHash);
-                distributeSupportTokens(uniqueHash, supportTokens, opposeTokens);
+                distributeSupportTokens(uniqueHash);
             }
         }
     }
 
-    function checkVoteStatus(string memory uniqueHash) public view returns (uint256 supportTokens, uint256 opposeTokens, uint256 lastVoteBlock, uint256 currentStatus) {
-        uint256 totalSupport = 0;
-        uint256 totalOppose = 0;
-        uint256 lastBlock = 0;
 
-        for (uint i = 0; i < voteRecords[uniqueHash].length; i++) {
-            if (voteRecords[uniqueHash][i].support) {
-                totalSupport += voteRecords[uniqueHash][i].pledgedAmount;
-            } else {
-                totalOppose += voteRecords[uniqueHash][i].pledgedAmount;
-            }
-            if (voteRecords[uniqueHash][i].voteBlock > lastBlock) {
-                lastBlock = voteRecords[uniqueHash][i].voteBlock;
-            }
-        }
 
-        return (totalSupport, totalOppose, lastBlock, crossIntoTransfers[uniqueHash].status);
-    }
 
-    function distributeOpposeTokens(string memory uniqueHash, uint256 supportTokens, uint256 opposeTokens) internal {
-      uint256 totalOpposeTokensToDistribute = 0;
-      for (uint i = 0; i < voteRecords[uniqueHash].length; i++) {
-          if (!voteRecords[uniqueHash][i].support) {
-              totalOpposeTokensToDistribute += voteRecords[uniqueHash][i].pledgedAmount;
-          }
-      }
-  
-      for (uint i = 0; i < voteRecords[uniqueHash].length; i++) {
-          if (voteRecords[uniqueHash][i].support) {
-              uint256 tokensToDistribute = (voteRecords[uniqueHash][i].pledgedAmount * totalOpposeTokensToDistribute) / supportTokens;
-              DAOToken.transfer(voteRecords[uniqueHash][i].user, tokensToDistribute);
-          }
-      }
-    }
-  
-    function distributeSupportTokens(string memory uniqueHash, uint256 supportTokens, uint256 opposeTokens) internal {
+    function distributeSupportTokens(string memory uniqueHash) internal {
         uint256 totalSupportTokensToDistribute = 0;
         for (uint i = 0; i < voteRecords[uniqueHash].length; i++) {
             if (voteRecords[uniqueHash][i].support) {
                 totalSupportTokensToDistribute += voteRecords[uniqueHash][i].pledgedAmount;
             }
         }
-    
+
         for (uint i = 0; i < voteRecords[uniqueHash].length; i++) {
             if (!voteRecords[uniqueHash][i].support) {
-                uint256 tokensToDistribute = (voteRecords[uniqueHash][i].pledgedAmount * totalSupportTokensToDistribute) / opposeTokens;
+                uint256 tokensToDistribute = (voteRecords[uniqueHash][i].pledgedAmount * totalSupportTokensToDistribute) / (totalSupply - totalSupportTokensToDistribute);
                 DAOToken.transfer(voteRecords[uniqueHash][i].user, tokensToDistribute);
             }
         }
     }
-  
+
+    function distributeOpposeTokens(string memory uniqueHash) internal {
+        uint256 totalOpposeTokensToDistribute = 0;
+        for (uint i = 0; i < voteRecords[uniqueHash].length; i++) {
+            if (!voteRecords[uniqueHash][i].support) {
+                totalOpposeTokensToDistribute += voteRecords[uniqueHash][i].pledgedAmount;
+            }
+        }
+
+        for (uint i = 0; i < voteRecords[uniqueHash].length; i++) {
+            if (voteRecords[uniqueHash][i].support) {
+                uint256 tokensToDistribute = (voteRecords[uniqueHash][i].pledgedAmount * totalOpposeTokensToDistribute) / DAOToken.totalSupply();
+                DAOToken.transfer(voteRecords[uniqueHash][i].user, tokensToDistribute);
+            }
+        }
+    }
+
 
 
 
@@ -242,5 +253,14 @@ contract interERC20 {
           bytesArray[i] = _bytes32[i];
       }
       return string(bytesArray);
-  }
+    }
+    
+    function _mint(address user,uint amount) internal {
+        balanceOf[user] += amount;
+        emit Transfer(msg.sender, address(0), amount);
+  
+    }
+
+
+
 }
