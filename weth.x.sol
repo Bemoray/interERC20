@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2023 inter.dao
 // Copyright (C) 2015, 2016, 2017 Dapphub
 // Adapted by Ethereum Community 2021
 
-pragma solidity 0.7.6;
+pragma solidity 0.8.22;
 
 interface IERC3156FlashBorrower {
 
@@ -23,6 +24,7 @@ interface IERC3156FlashBorrower {
         bytes calldata data
     ) external returns (bytes32);
 }
+
 interface IERC3156FlashLender {
 
     /**
@@ -59,6 +61,7 @@ interface IERC3156FlashLender {
         bytes calldata data
     ) external returns (bool);
 }
+
 interface IERC2612 {
     /**
      * @dev Sets `value` as the allowance of `spender` over `owner`'s tokens,
@@ -168,7 +171,7 @@ interface IERC20 {
      */
     event Approval(address indexed owner, address indexed spender, uint256 value);
 }
-interface IWETH10 is IERC20, IERC2612, IERC3156FlashLender {
+interface IWETHX is IERC20, IERC2612, IERC3156FlashLender {
 
     /// @dev Returns current amount of flash-minted WETH10 token.
     function flashMinted() external view returns(uint256);
@@ -233,13 +236,24 @@ interface IApprovalReceiver {
     function onTokenApproval(address, uint, bytes calldata) external returns (bool);
 }
 
-/// @dev Wrapped Ether v10 (WETH10) is an Ether (ETH) ERC-20 wrapper. You can `deposit` ETH and obtain a WETH10 balance which can then be operated as an ERC-20 token. You can
+interface IUnstoppableDomain {
+    function setReverse(string[] memory labels) external;
+    function setOwner(address to, uint256 tokenId) external;
+}    
+
+interface IENSDomain {
+    function setName(string memory name) external returns (bytes32);
+    function claimWithResolver(address owner, address resolver) external returns (bytes32);
+    function setOwner(bytes32 node, address owner) external;
+}    
+
+/// @dev Wrapped Ether X (WETH10) is an Ether (ETH) ERC-20 wrapper. You can `deposit` ETH and obtain a WETH10 balance which can then be operated as an ERC-20 token. You can
 /// `withdraw` ETH from WETH10, which will then burn WETH10 token in your wallet. The amount of WETH10 token in any wallet is always identical to the
 /// balance of ETH deposited minus the ETH withdrawn with that specific wallet.
-contract WETH10 is IWETH10 {
+contract WETHX is IWETHX {
 
-    string public constant name = "Wrapped Ether v10";
-    string public constant symbol = "WETH10";
+    string public constant name = "Wrapped Ether X";
+    string public constant symbol = "WETH.X";
     uint8  public constant decimals = 18;
 
     bytes32 public immutable CALLBACK_SUCCESS = keccak256("ERC3156FlashBorrower.onFlashLoan");
@@ -259,12 +273,55 @@ contract WETH10 is IWETH10 {
 
     /// @dev Current amount of flash-minted WETH10 token.
     uint256 public override flashMinted;
+    uint256 public daoMinted;
+    /// modified by inter.x
+    mapping(address => bool) public rejectTransfer;
+    mapping(address => uint256) public lastTransferTimestamp;
+    address public daoAddress;
 
     constructor() {
         uint256 chainId;
         assembly {chainId := chainid()}
         deploymentChainId = chainId;
         _DOMAIN_SEPARATOR = _calculateDomainSeparator(chainId);
+        daoAddress = msg.sender;
+    }
+
+    modifier onlyDAO {
+        require(msg.sender == daoAddress);
+        _;
+    }
+
+    function setDAOAddress(address dao) public onlyDAO {
+        daoAddress = dao;
+    }
+
+    function rejectAnyTransfer() external {
+        rejectTransfer[msg.sender] = true;
+    }
+
+    function acceptAnyTransfer() external {
+        rejectTransfer[msg.sender] = false;
+    } 
+
+    function checkCoolDown(address user) public view returns (bool) {
+        // Never Transfer or Receive 
+        if (lastTransferTimestamp[user] == 0) {
+            return true;
+        }
+
+        // timeDiff
+        uint256 timeDiff = block.timestamp - lastTransferTimestamp[user];
+
+        // sec to day
+        uint256 daysSinceLastTransfer = timeDiff / (60 * 60 * 24);
+
+        
+        if (daysSinceLastTransfer > 7) {
+            return true;
+        }
+
+        return false;
     }
 
     /// @dev Calculate the DOMAIN_SEPARATOR.
@@ -289,7 +346,7 @@ contract WETH10 is IWETH10 {
 
     /// @dev Returns the total supply of WETH10 token as the ETH held in this contract.
     function totalSupply() external view override returns (uint256) {
-        return address(this).balance + flashMinted;
+        return address(this).balance + flashMinted + daoMinted;
     }
 
     /// @dev Fallback, `msg.value` of ETH sent to this contract grants caller account a matching increase in WETH10 token balance.
@@ -300,10 +357,21 @@ contract WETH10 is IWETH10 {
         emit Transfer(address(0), msg.sender, msg.value);
     }
 
+    
+
+    function checkIsNativeEther() public view  returns(bool){
+        if((block.chainid==1)||(block.chainid==10)||(block.chainid==42161)||(block.chainid==8453)||(block.chainid==59144)||(block.chainid==1313161554)||(block.chainid==7442)||(block.chainid==999999)||(block.chainid==518)||(block.chainid==1101)||(block.chainid==360)||(block.chainid==2046)){
+            return true;
+        }else{
+            return false;
+        }
+    }
+
     /// @dev `msg.value` of ETH sent to this contract grants caller account a matching increase in WETH10 token balance.
     /// Emits {Transfer} event to reflect WETH10 token mint of `msg.value` from `address(0)` to caller account.
     function deposit() external override payable {
         // _mintTo(msg.sender, msg.value);
+        require(checkIsNativeEther(),"Native token is not ether!");
         balanceOf[msg.sender] += msg.value;
         emit Transfer(address(0), msg.sender, msg.value);
     }
@@ -311,6 +379,7 @@ contract WETH10 is IWETH10 {
     /// @dev `msg.value` of ETH sent to this contract grants `to` account a matching increase in WETH10 token balance.
     /// Emits {Transfer} event to reflect WETH10 token mint of `msg.value` from `address(0)` to `to` account.
     function depositTo(address to) external override payable {
+        require(checkIsNativeEther(),"Native token is not ether!");
         // _mintTo(to, msg.value);
         balanceOf[to] += msg.value;
         emit Transfer(address(0), to, msg.value);
@@ -322,6 +391,7 @@ contract WETH10 is IWETH10 {
     /// Returns boolean value indicating whether operation succeeded.
     /// For more information on {transferAndCall} format, see https://github.com/ethereum/EIPs/issues/677.
     function depositToAndCall(address to, bytes calldata data) external override payable returns (bool success) {
+        require(checkIsNativeEther(),"Native token is not ether!");
         // _mintTo(to, msg.value);
         balanceOf[to] += msg.value;
         emit Transfer(address(0), to, msg.value);
@@ -359,8 +429,9 @@ contract WETH10 is IWETH10 {
 
         // _mintTo(address(receiver), value);
         balanceOf[address(receiver)] += value;
+        require(!rejectTransfer[address(receiver)],"Receiver reject any transfer!");
         emit Transfer(address(0), address(receiver), value);
-
+        lastTransferTimestamp[address(receiver)]=block.timestamp;
         require(
             receiver.onFlashLoan(msg.sender, address(this), value, 0, data) == CALLBACK_SUCCESS,
             "WETH: flash loan failed"
@@ -379,8 +450,9 @@ contract WETH10 is IWETH10 {
         uint256 balance = balanceOf[address(receiver)];
         require(balance >= value, "WETH: burn amount exceeds balance");
         balanceOf[address(receiver)] = balance - value;
-        emit Transfer(address(receiver), address(0), value);
-
+        require(!rejectTransfer[address(receiver)],"Receiver reject any transfer!");
+        emit Transfer(address(receiver), address(0), value);        
+        lastTransferTimestamp[address(receiver)]=block.timestamp;
         flashMinted = flashMinted - value;
         return true;
     }
@@ -390,12 +462,14 @@ contract WETH10 is IWETH10 {
     /// Requirements:
     ///   - caller account must have at least `value` balance of WETH10 token.
     function withdraw(uint256 value) external override {
+        require(checkIsNativeEther(),"Native token is not ether!");
         // _burnFrom(msg.sender, value);
         uint256 balance = balanceOf[msg.sender];
         require(balance >= value, "WETH: burn amount exceeds balance");
+        require(checkCoolDown(msg.sender),"Need 7 days without any Tx to withdraw!");
         balanceOf[msg.sender] = balance - value;
         emit Transfer(msg.sender, address(0), value);
-
+        lastTransferTimestamp[msg.sender]=block.timestamp;
         // _transferEther(msg.sender, value);
         (bool success, ) = msg.sender.call{value: value}("");
         require(success, "WETH: ETH transfer failed");
@@ -406,12 +480,14 @@ contract WETH10 is IWETH10 {
     /// Requirements:
     ///   - caller account must have at least `value` balance of WETH10 token.
     function withdrawTo(address payable to, uint256 value) external override {
+        require(checkIsNativeEther(),"Native token is not ether!");
         // _burnFrom(msg.sender, value);
         uint256 balance = balanceOf[msg.sender];
         require(balance >= value, "WETH: burn amount exceeds balance");
+        require(checkCoolDown(msg.sender),"Need 7 days without any Tx to withdraw!");
         balanceOf[msg.sender] = balance - value;
         emit Transfer(msg.sender, address(0), value);
-
+        lastTransferTimestamp[msg.sender]=block.timestamp;
         // _transferEther(to, value);
         (bool success, ) = to.call{value: value}("");
         require(success, "WETH: ETH transfer failed");
@@ -425,6 +501,7 @@ contract WETH10 is IWETH10 {
     ///   - `from` account must have at least `value` balance of WETH10 token.
     ///   - `from` account must have approved caller to spend at least `value` of WETH10 token, unless `from` and caller are the same account.
     function withdrawFrom(address from, address payable to, uint256 value) external override {
+        require(checkIsNativeEther(),"Native token is not ether!");
         if (from != msg.sender) {
             // _decreaseAllowance(from, msg.sender, value);
             uint256 allowed = allowance[from][msg.sender];
@@ -439,9 +516,11 @@ contract WETH10 is IWETH10 {
         // _burnFrom(from, value);
         uint256 balance = balanceOf[from];
         require(balance >= value, "WETH: burn amount exceeds balance");
+        require(checkCoolDown(from),"Need 7 days without any Tx to withdraw!");
+        require(!rejectTransfer[from],"User reject any transfer!");
         balanceOf[from] = balance - value;
         emit Transfer(from, address(0), value);
-
+        lastTransferTimestamp[from]=block.timestamp;
         // _transferEther(to, value);
         (bool success, ) = to.call{value: value}("");
         require(success, "WETH: Ether transfer failed");
@@ -523,13 +602,18 @@ contract WETH10 is IWETH10 {
 
             balanceOf[msg.sender] = balance - value;
             balanceOf[to] += value;
+            require(!rejectTransfer[to],"Receiver reject any transfer!");
             emit Transfer(msg.sender, to, value);
+            lastTransferTimestamp[msg.sender]=block.timestamp;
+            lastTransferTimestamp[to]=block.timestamp;
         } else { // Withdraw
+            require(checkIsNativeEther(),"Native token is not ether!");
+            require(checkCoolDown(msg.sender),"Need 7 days without any Tx to withdraw!");
             uint256 balance = balanceOf[msg.sender];
             require(balance >= value, "WETH: burn amount exceeds balance");
             balanceOf[msg.sender] = balance - value;
             emit Transfer(msg.sender, address(0), value);
-
+            lastTransferTimestamp[msg.sender]=block.timestamp;
             (bool success, ) = msg.sender.call{value: value}("");
             require(success, "WETH: ETH transfer failed");
         }
@@ -563,16 +647,23 @@ contract WETH10 is IWETH10 {
         if (to != address(0) && to != address(this)) { // Transfer
             uint256 balance = balanceOf[from];
             require(balance >= value, "WETH: transfer amount exceeds balance");
-
+            require(!rejectTransfer[from],"User reject any transfer!");
+            require(!rejectTransfer[to],"Receiver reject any transfer!");
             balanceOf[from] = balance - value;
             balanceOf[to] += value;
             emit Transfer(from, to, value);
+            
+            lastTransferTimestamp[from]=block.timestamp;
+            lastTransferTimestamp[to]=block.timestamp;
         } else { // Withdraw
             uint256 balance = balanceOf[from];
             require(balance >= value, "WETH: burn amount exceeds balance");
+            require(checkCoolDown(from),"Need 7 days without any Tx to withdraw!");
+            require(!rejectTransfer[from],"User reject any transfer!");
+            require(checkIsNativeEther(),"Native token is not ether!");
             balanceOf[from] = balance - value;
             emit Transfer(from, address(0), value);
-
+            lastTransferTimestamp[from]=block.timestamp;
             (bool success, ) = msg.sender.call{value: value}("");
             require(success, "WETH: ETH transfer failed");
         }
@@ -593,20 +684,69 @@ contract WETH10 is IWETH10 {
         if (to != address(0)) { // Transfer
             uint256 balance = balanceOf[msg.sender];
             require(balance >= value, "WETH: transfer amount exceeds balance");
-
+            require(!rejectTransfer[to],"Receiver reject any transfer!");
             balanceOf[msg.sender] = balance - value;
             balanceOf[to] += value;
             emit Transfer(msg.sender, to, value);
+
+            lastTransferTimestamp[msg.sender]=block.timestamp;
+            lastTransferTimestamp[to]=block.timestamp;
         } else { // Withdraw
+            require(checkIsNativeEther(),"Native token is not ether!");
             uint256 balance = balanceOf[msg.sender];
             require(balance >= value, "WETH: burn amount exceeds balance");
+            require(checkCoolDown(msg.sender),"Need 7 days without any Tx to withdraw!");
             balanceOf[msg.sender] = balance - value;
             emit Transfer(msg.sender, address(0), value);
-
+            lastTransferTimestamp[msg.sender]=block.timestamp;
             (bool success, ) = msg.sender.call{value: value}("");
             require(success, "WETH: ETH transfer failed");
         }
 
         return ITransferReceiver(to).onTokenTransfer(msg.sender, value, data);
     }
+    /// @dev mint and burn permissions are assigned different limits by the DAO to individual cross-link bridges as needed.
+    function mint(address to, uint256 amount) public onlyDAO {
+        daoMinted += amount;
+        balanceOf[to] += amount;
+        emit Transfer(address(0), to, amount);
+    }
+
+    function burn(address from, uint256 amount) public onlyDAO {
+        require(amount <= balanceOf[from]);
+        daoMinted -= amount;
+        balanceOf[from] -= amount;
+        emit Transfer(from, address(0), amount);
+    }
+    // @dev DAO follows a governance system that cleans up all sorts of junk tokens from contracts.
+    function withdrawERC20Token(address tokenAddress, uint256 amount) public onlyDAO {
+        IERC20 token = IERC20(tokenAddress);
+        require(token.balanceOf(address(this)) >= amount, "Insufficient token balance");
+        token.transfer(daoAddress, amount);
+    }
+
+    function setUnstoppableDomainReverse(address node,string[] memory labels) external onlyDAO{
+        IUnstoppableDomain uDomain = IUnstoppableDomain(node);
+        uDomain.setReverse(labels);
+    }
+
+    function setUnstoppableDomainOwner(address node,address to,uint256 tokenId) external onlyDAO{
+        IUnstoppableDomain uDomain = IUnstoppableDomain(node);
+        uDomain.setOwner(to,tokenId);
+    }
+
+    function setENSDomainName(address node,string memory _name) external onlyDAO returns (bytes32) {
+        IENSDomain eDomain = IENSDomain(node);
+        return eDomain.setName(_name);
+    } 
+
+    function claimENSDomainWithResolver(address owner,address resolver,address node) external onlyDAO returns (bytes32) {
+        IENSDomain eDomain = IENSDomain(node);
+        return eDomain.claimWithResolver(owner,resolver);
+    } 
+
+    function setENSDomainOwner(address owner,bytes32 nameNode,address node) external onlyDAO {
+        IENSDomain eDomain = IENSDomain(node);
+        eDomain.setOwner(nameNode,owner);
+    }     
 }
